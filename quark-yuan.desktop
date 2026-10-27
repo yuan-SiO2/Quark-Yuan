@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Quark-Yuan
+Name[zh_CN]=Quark-Yuan · 夸克网盘
+GenericName=Quark Drive (web UI + member download engine)
+Comment=官方网页 UI + 会员通道多连接下载引擎
+# 方式一：AppImage —— 把 quark-yuan.desktop 与 Quark-Yuan-*.AppImage 放到同一目录
+Exec=Quark-Yuan.appimage %U
+# 方式二：源码运行 —— 改成你本机的 start.sh 绝对路径
+# Exec=/path/to/Quark-Yuan/start.sh %U
+Icon=quark-yuan
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=quark;pan;netdisk;网盘;夸克;下载;
+StartupWMClass=Quark-Yuan

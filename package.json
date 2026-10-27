@@ -1,0 +1,80 @@
+{
+  "name": "quark-yuan",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Quark-Yuan · 夸克网盘官方网页 UI + 会员通道多连接下载引擎",
+  "author": "yuan-SiO2 <yuan-SiO2@users.noreply.github.com>",
+  "homepage": "https://github.com/yuan-SiO2/quark-yuan",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yuan-SiO2/quark-yuan.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yuan-SiO2/quark-yuan/issues"
+  },
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron . --no-sandbox",
+    "start:x11": "electron . --no-sandbox --ozone-platform=x11",
+    "dev": "QH_DEVTOOLS=1 electron . --no-sandbox --enable-logging",
+    "appimage": "electron-builder --linux AppImage --x64"
+  },
+  "keywords": [
+    "quark",
+    "electron",
+    "download"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^45.0.0"
+  },
+  "build": {
+    "appId": "cn.quarkyuan.app",
+    "productName": "Quark-Yuan",
+    "asar": true,
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json",
+      "config.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../quark-drive-extract/usr/bin/quark-drive",
+        "to": "engine/quark-drive"
+      },
+      {
+        "from": "../quark-drive-extract/usr/lib",
+        "to": "engine/lib"
+      }
+    ],
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Network",
+      "icon": "assets/icon.png",
+      "executableName": "quark-yuan",
+      "synopsis": "夸克网盘官方网页 UI + 会员通道多连接下载",
+      "desktop": {
+        "entry": {
+          "Name": "Quark-Yuan",
+          "Name[zh_CN]": "Quark-Yuan · 夸克网盘",
+          "StartupWMClass": "Quark-Yuan"
+        }
+      }
+    },
+    "appImage": {
+      "artifactName": "Quark-Yuan-${version}-x86_64.${ext}"
+    }
+  }
+}

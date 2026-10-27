@@ -1,0 +1,19 @@
+{
+  "startUrl": "https://pan.quark.cn/list#/list/all",
+  "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  "engine": {
+    "path": "",
+    "autoLogin": true,
+    "clientUA": "quark-cloud-drive/3.14.2 (Windows NT 10.0; Win64; x64)"
+  },
+  "downloadDir": "~/Downloads/quark",
+  "conn": 8,
+  "nativeDownload": true,
+  "spoofClientUA": true,
+  "hideLimitDialog": true,
+  "maxParallelJobs": 1,
+  "autoCancelBrowserDownload": true,
+  "nonPreviewAction": "block",
+  "previewBlockAll": false,
+  "appTheme": "dark"
+}
