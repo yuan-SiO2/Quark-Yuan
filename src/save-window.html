@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>转存分享到网盘</title>
+<style>
+  :root {
+    --bg:#181818; --fg:#ededed; --bd:rgba(255,255,255,.12); --hd:#212121;
+    --btn:rgba(255,255,255,.07); --btn-h:rgba(255,255,255,.16); --row:rgba(255,255,255,.08);
+    --muted:rgba(237,237,237,.6); --ok:#00a240;
+  }
+  body[data-theme="light"] {
+    --bg:#f9f9f9; --fg:#1a1c1f; --bd:rgba(26,28,31,.14); --hd:#ffffff;
+    --btn:rgba(26,28,31,.06); --btn-h:rgba(26,28,31,.13); --row:rgba(26,28,31,.08);
+    --muted:rgba(26,28,31,.6); --ok:#00a240;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:13px/1.6 -apple-system,"Noto Sans CJK SC","Source Han Sans SC",sans-serif; }
+  header { padding:12px 16px; background:var(--hd); border-bottom:1px solid var(--bd);
+    font-weight:600; display:flex; align-items:center; gap:8px; }
+  .grow { flex:1; }
+  main { padding:14px 16px 88px; max-width:900px; margin:0 auto; }
+  .row { display:flex; gap:8px; align-items:center; margin-bottom:10px; flex-wrap:wrap; }
+  input[type=text], input[type=password] {
+    background:var(--btn); color:var(--fg); border:1px solid var(--bd);
+    border-radius:8px; padding:7px 10px; font-size:13px; outline:none; }
+  #url { flex:1; min-width:260px; }
+  #pwd { width:120px; }
+  button { background:var(--btn); color:var(--fg); border:1px solid var(--bd);
+    border-radius:8px; padding:7px 12px; font-size:13px; cursor:pointer; }
+  button:hover:not(:disabled) { background:var(--btn-h); }
+  button:disabled { opacity:.45; cursor:default; }
+  button.primary { background:#2563eb; border-color:#2563eb; color:#fff; font-weight:600; }
+  button.primary:hover:not(:disabled) { filter:brightness(1.08); background:#2563eb; }
+  .panel { border:1px solid var(--bd); border-radius:12px; overflow:hidden; margin-bottom:12px; }
+  .panel-hd { padding:8px 12px; background:var(--hd); border-bottom:1px solid var(--bd);
+    font-size:12px; display:flex; align-items:center; gap:8px; }
+  .list { max-height:320px; overflow-y:auto; }
+  .file { display:flex; align-items:center; gap:10px; padding:8px 12px; border-top:1px solid var(--row); }
+  .file:first-child { border-top:0; }
+  .file .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .file .size { color:var(--muted); font-size:12px; white-space:nowrap; }
+  .file .tag { font-size:11px; color:var(--muted); border:1px solid var(--bd); border-radius:6px; padding:0 5px; }
+  .crumb { font-size:12px; color:var(--muted); }
+  .folder { display:flex; align-items:center; gap:10px; padding:7px 12px; border-top:1px solid var(--row); cursor:pointer; }
+  .folder:hover { background:var(--btn); }
+  footer { position:fixed; left:0; right:0; bottom:0; padding:12px 16px; background:var(--hd);
+    border-top:1px solid var(--bd); display:flex; align-items:center; gap:10px; }
+  .msg { font-size:12px; color:var(--muted); }
+  .msg.ok { color:var(--ok); }
+  .empty { padding:16px; color:var(--muted); font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <span>转存分享到网盘</span>
+  <span class="grow"></span>
+  <span class="msg" id="msg"></span>
+</header>
+
+<main>
+  <div class="row">
+    <input type="text" id="url" placeholder="分享链接，例如 https://pan.quark.cn/s/xxxxxx">
+    <input type="password" id="pwd" placeholder="提取码(可选)">
+    <button id="probeBtn">解析链接</button>
+  </div>
+
+  <div class="panel">
+    <div class="panel-hd">
+      <input type="checkbox" id="selAll" disabled>
+      <span>分享内容</span>
+      <span class="grow"></span>
+      <span class="msg" id="count">未解析</span>
+    </div>
+    <div class="list" id="files"><div class="empty">先点「解析链接」</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-hd">
+      <span>保存到</span>
+      <span class="crumb" id="crumb">根目录</span>
+      <span class="grow"></span>
+      <button id="upBtn">上一级</button>
+    </div>
+    <div class="list" id="folders"><div class="empty">读取中…</div></div>
+  </div>
+</main>
+
+<footer>
+  <span class="msg" id="footerMsg">请先解析链接并勾选文件</span>
+  <span class="grow"></span>
+  <button id="closeBtn">关闭</button>
+  <button class="primary" id="saveBtn" disabled>转存选中</button>
+</footer>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let share = null;              // { url, pwd, files }
+  let selected = new Set();      // fid
+  let target = { fid: '0', name: '根目录' };
+  let stack = [{ fid: '0', name: '根目录' }];
+
+  const fmt = (n) => {
+    n = Number(n) || 0;
+    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return n.toFixed(i ? 1 : 0) + u[i];
+  };
+  const say = (t, ok) => { $('msg').textContent = t || ''; $('msg').className = 'msg' + (ok ? ' ok' : ''); };
+
+  function renderFiles() {
+    const box = $('files');
+    if (!share) { box.innerHTML = '<div class="empty">先点「解析链接」</div>'; return; }
+    if (!share.files.length) { box.innerHTML = '<div class="empty">分享里没有文件</div>'; return; }
+    box.innerHTML = '';
+    for (const f of share.files) {
+      const row = document.createElement('label');
+      row.className = 'file';
+      row.innerHTML =
+        '<input type="checkbox" data-fid="' + f.fid + '">' +
+        '<span class="name" title="' + f.name + '">' + f.name + '</span>' +
+        (f.dir ? '<span class="tag">文件夹</span>' : '') +
+        '<span class="size">' + (f.size ? fmt(f.size) : '') + '</span>';
+      const cb = row.querySelector('input');
+      cb.checked = selected.has(f.fid);
+      cb.onchange = () => {
+        if (cb.checked) selected.add(f.fid); else selected.delete(f.fid);
+        syncCount();
+      };
+      box.appendChild(row);
+    }
+    syncCount();
+  }
+
+  function syncCount() {
+    const total = share ? share.files.length : 0;
+    $('count').textContent = total ? ('已选 ' + selected.size + ' / ' + total) : '未解析';
+    $('selAll').disabled = !total;
+    $('selAll').checked = total > 0 && selected.size === total;
+    $('selAll').indeterminate = selected.size > 0 && selected.size < total;
+    $('saveBtn').disabled = !share || selected.size === 0;
+    $('footerMsg').textContent = !share ? '请先解析链接并勾选文件'
+      : (selected.size ? ('将转存 ' + selected.size + ' 项到「' + target.name + '」') : '请勾选要转存的文件');
+  }
+
+  async function doProbe() {
+    const url = $('url').value.trim();
+    const pwd = $('pwd').value.trim();
+    if (!url) { say('请填写分享链接'); return; }
+    say('解析中…');
+    $('probeBtn').disabled = true;
+    try {
+      const r = await window.qh.probe(url, pwd);
+      if (r && r.error) throw new Error(r.error);
+      share = { url, pwd, files: (r && r.files) || [] };
+      selected = new Set(share.files.map((f) => f.fid)); // 默认全选，用户可取消
+      renderFiles();
+      say('解析成功：' + share.files.length + ' 项', true);
+    } catch (e) {
+      share = null; selected = new Set(); renderFiles();
+      say('解析失败：' + (e && e.message));
+    } finally {
+      $('probeBtn').disabled = false;
+    }
+  }
+
+  async function loadFolders(fid) {
+    $('folders').innerHTML = '<div class="empty">读取中…</div>';
+    try {
+      const r = await window.qh.folders(fid);
+      const dirs = (r && r.dirs) || [];
+      $('folders').innerHTML = '';
+      if (!dirs.length) $('folders').innerHTML = '<div class="empty">没有子文件夹</div>';
+      for (const d of dirs) {
+        const row = document.createElement('div');
+        row.className = 'folder';
+        row.innerHTML = '<span>📁 ' + d.name + '</span>';
+        row.onclick = () => { stack.push({ fid: d.fid, name: d.name }); target = stack[stack.length - 1]; syncCrumb(); loadFolders(d.fid); };
+        $('folders').appendChild(row);
+      }
+      target = stack[stack.length - 1];
+      syncCrumb();
+    } catch (e) {
+      $('folders').innerHTML = '<div class="empty">读取失败：' + (e && e.message) + '</div>';
+    }
+  }
+
+  function syncCrumb() {
+    $('crumb').textContent = stack.map((s) => s.name).join(' / ');
+    $('upBtn').disabled = stack.length <= 1;
+    syncCount();
+  }
+
+  $('probeBtn').onclick = doProbe;
+  $('selAll').onchange = () => {
+    if (!share) return;
+    selected = $('selAll').checked ? new Set(share.files.map((f) => f.fid)) : new Set();
+    renderFiles();
+  };
+  $('upBtn').onclick = () => {
+    if (stack.length <= 1) return;
+    stack.pop();
+    const cur = stack[stack.length - 1];
+    target = cur;
+    syncCrumb();
+    loadFolders(cur.fid);
+  };
+  $('closeBtn').onclick = () => window.qh.close();
+  $('saveBtn').onclick = async () => {
+    if (!share || !selected.size) return;
+    $('saveBtn').disabled = true;
+    say('转存中…');
+    try {
+      const r = await window.qh.save({
+        url: share.url, pwd: share.pwd, toPdirFid: target.fid, fids: Array.from(selected),
+      });
+      if (r && r.ok) say('✓ 已转存 ' + r.count + ' 项到「' + target.name + '」', true);
+      else say('✗ ' + ((r && r.message) || '转存失败'));
+    } catch (e) {
+      say('✗ ' + (e && e.message));
+    } finally {
+      $('saveBtn').disabled = false;
+    }
+  };
+
+  window.qh.onPrefill((data) => {
+    if (data && data.url) $('url').value = data.url;
+    if (data && data.pwd) $('pwd').value = data.pwd;
+    if (data && data.url) doProbe();
+  });
+
+  (async () => {
+    try {
+      const t = await window.qh.theme();
+      document.body.dataset.theme = t === 'light' ? 'light' : 'dark';
+    } catch (e) {}
+    loadFolders('0');
+  })();
+})();
+</script>
+</body>
+</html>
