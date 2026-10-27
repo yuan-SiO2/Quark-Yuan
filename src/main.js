@@ -617,8 +617,12 @@ if (!gotLock) {
     // ---- 转存窗口 ----
     ipcMain.handle('qh:share-probe', async (_e, payload) => {
       try {
-        const r = await require('./quarkapi').probeShare((payload && payload.url) || '', (payload && payload.pwd) || '');
-        return { ok: true, title: r.title, files: r.files };
+        const r = await require('./quarkapi').probeShare(
+          (payload && payload.url) || '',
+          (payload && payload.pwd) || '',
+          (payload && payload.dir) || '0'
+        );
+        return { ok: true, title: r.title, dir: r.pdirFid, total: r.total, truncated: r.truncated, files: r.files };
       } catch (e) {
         return { ok: false, error: e && e.message, files: [] };
       }
@@ -628,10 +632,17 @@ if (!gotLock) {
       const url = (payload && payload.url) || '';
       const pwd = (payload && payload.pwd) || '';
       const toPdir = (payload && payload.toPdirFid) || '0';
+      // items: 跨层勾选结果 [{fid, parentFid}]（token 由主进程按本次 stoken 现取）
+      const items = Array.isArray(payload && payload.items)
+        ? payload.items
+            .filter((x) => x && typeof x === 'object' && x.fid)
+            .map((x) => ({ fid: String(x.fid), parentFid: String(x.parentFid || '0') }))
+        : [];
       const fids = (payload && payload.fids) || [];
-      log('转存(窗口):', url, '勾选', fids.length, '项 → 目录', toPdir);
+      const picked = items.length ? items : fids;
+      log('转存(窗口):', url, '勾选', picked.length, '项 → 目录', toPdir);
       try {
-        const r = await require('./quarkapi').saveShareToDrive(url, pwd, toPdir, fids);
+        const r = await require('./quarkapi').saveShareToDrive(url, pwd, toPdir, picked);
         log('转存成功:', r.count, '项, task=', r.taskId);
         return { ok: true, count: r.count };
       } catch (e) {

@@ -35,20 +35,32 @@
   button.primary:hover:not(:disabled) { filter:brightness(1.08); background:#2563eb; }
   .panel { border:1px solid var(--bd); border-radius:12px; overflow:hidden; margin-bottom:12px; }
   .panel-hd { padding:8px 12px; background:var(--hd); border-bottom:1px solid var(--bd);
-    font-size:12px; display:flex; align-items:center; gap:8px; }
-  .list { max-height:320px; overflow-y:auto; }
-  .file { display:flex; align-items:center; gap:10px; padding:8px 12px; border-top:1px solid var(--row); }
-  .file:first-child { border-top:0; }
-  .file .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .file .size { color:var(--muted); font-size:12px; white-space:nowrap; }
-  .file .tag { font-size:11px; color:var(--muted); border:1px solid var(--bd); border-radius:6px; padding:0 5px; }
-  .crumb { font-size:12px; color:var(--muted); }
+    font-size:12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .list { max-height:420px; overflow:auto; }
+
+  /* 树形分享内容 */
+  .tree-row { display:flex; align-items:center; gap:8px; padding:6px 12px 6px 0; }
+  .tree-row:hover { background:var(--btn); }
+  .tree-row .name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tree-row .name.enterable { cursor:pointer; }
+  .tree-row .name.enterable:hover { text-decoration:underline; }
+  .tree-row .size { color:var(--muted); font-size:12px; white-space:nowrap; }
+  .tree-row .tag { font-size:11px; color:var(--muted); border:1px solid var(--bd); border-radius:6px; padding:0 5px; }
+  .tree-row button.caret { width:18px; height:18px; padding:0; border:0; background:transparent;
+    color:var(--muted); font-size:11px; line-height:1; flex:none; }
+  .tree-row button.caret:hover { color:var(--fg); background:transparent; }
+  .tree-row .caret-space { display:inline-block; width:18px; flex:none; }
+  .tree-row.covered .name { color:var(--muted); }
+  .tree-row.covered .tag { opacity:.6; }
+
   .folder { display:flex; align-items:center; gap:10px; padding:7px 12px; border-top:1px solid var(--row); cursor:pointer; }
   .folder:hover { background:var(--btn); }
+  .folder:first-child { border-top:0; }
   footer { position:fixed; left:0; right:0; bottom:0; padding:12px 16px; background:var(--hd);
     border-top:1px solid var(--bd); display:flex; align-items:center; gap:10px; }
   .msg { font-size:12px; color:var(--muted); }
   .msg.ok { color:var(--ok); }
+  .hint { font-size:12px; color:var(--muted); font-weight:400; }
   .empty { padding:16px; color:var(--muted); font-size:12px; }
 </style>
 </head>
@@ -68,9 +80,11 @@
 
   <div class="panel">
     <div class="panel-hd">
-      <input type="checkbox" id="selAll" disabled>
+      <input type="checkbox" id="selAll" disabled title="全选根层（文件夹按整包转存）">
       <span>分享内容</span>
+      <span class="hint" title="点 ▸ 或文件夹名展开；勾选文件夹 = 整个文件夹转存；想单独挑里面的文件，先取消该文件夹的勾选">（▸ 展开 · 勾文件夹=整包）</span>
       <span class="grow"></span>
+      <button id="clearBtn" disabled>清空</button>
       <span class="msg" id="count">未解析</span>
     </div>
     <div class="list" id="files"><div class="empty">先点「解析链接」</div></div>
@@ -97,8 +111,11 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  let share = null;              // { url, pwd, files }
-  let selected = new Set();      // fid
+
+  let share = null;                 // { url, pwd, title }
+  let rootNode = null;              // 分享根（虚拟节点，不渲染自己）
+  const selected = new Map();       // fid -> { fid, token, name, dir }
+
   let target = { fid: '0', name: '根目录' };
   let stack = [{ fid: '0', name: '根目录' }];
 
@@ -110,40 +127,213 @@
     return n.toFixed(i ? 1 : 0) + u[i];
   };
   const say = (t, ok) => { $('msg').textContent = t || ''; $('msg').className = 'msg' + (ok ? ' ok' : ''); };
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
 
-  function renderFiles() {
+  /* ---------------- 树形分享内容 ---------------- */
+
+  function makeNode(it, parent) {
+    return {
+      fid: it.fid,
+      token: it.token || '',
+      name: it.name || '(未命名)',
+      dir: !!it.dir,
+      size: it.size || 0,
+      parent: parent || null,
+      depth: parent ? parent.depth + 1 : 0,
+      loaded: !it.dir,          // 文件天然“已加载”，文件夹首次展开时再请求
+      loading: false,
+      expanded: false,
+      children: [],
+      kidsEl: null,
+      cbEl: null,
+      caretEl: null,
+      rowEl: null,
+    };
+  }
+
+  function buildTree() {
     const box = $('files');
-    if (!share) { box.innerHTML = '<div class="empty">先点「解析链接」</div>'; return; }
-    if (!share.files.length) { box.innerHTML = '<div class="empty">分享里没有文件</div>'; return; }
     box.innerHTML = '';
-    for (const f of share.files) {
-      const row = document.createElement('label');
-      row.className = 'file';
-      row.innerHTML =
-        '<input type="checkbox" data-fid="' + f.fid + '">' +
-        '<span class="name" title="' + f.name + '">' + f.name + '</span>' +
-        (f.dir ? '<span class="tag">文件夹</span>' : '') +
-        '<span class="size">' + (f.size ? fmt(f.size) : '') + '</span>';
-      const cb = row.querySelector('input');
-      cb.checked = selected.has(f.fid);
-      cb.onchange = () => {
-        if (cb.checked) selected.add(f.fid); else selected.delete(f.fid);
-        syncCount();
-      };
-      box.appendChild(row);
+    if (!share || !rootNode) {
+      box.appendChild(el('div', 'empty', '先点「解析链接」'));
+      syncCount();
+      return;
     }
+    if (!rootNode.children.length) {
+      box.appendChild(el('div', 'empty', '分享里没有内容'));
+      syncCount();
+      return;
+    }
+    box.appendChild(buildKids(rootNode));
+    refreshChecks();
     syncCount();
   }
 
+  function buildKids(node) {
+    const wrap = el('div', 'tree-kids');
+    node.kidsEl = wrap;
+    for (const c of node.children) wrap.appendChild(buildRow(c));
+    return wrap;
+  }
+
+  function buildRow(node) {
+    const row = el('div', 'tree-row');
+    row.style.paddingLeft = (4 + node.depth * 16) + 'px';
+    node.rowEl = row;
+
+    if (node.dir) {
+      const caret = el('button', 'caret', node.expanded ? '▾' : '▸');
+      caret.title = '展开 / 收起';
+      caret.onclick = () => toggleExpand(node);
+      node.caretEl = caret;
+      row.appendChild(caret);
+    } else {
+      row.appendChild(el('span', 'caret-space'));
+    }
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.onchange = () => toggleSelect(node, cb.checked);
+    node.cbEl = cb;
+    row.appendChild(cb);
+
+    const name = el('span', 'name' + (node.dir ? ' enterable' : ''), node.name);
+    name.title = node.name;
+    if (node.dir) name.onclick = () => toggleExpand(node);
+    row.appendChild(name);
+
+    if (node.dir) row.appendChild(el('span', 'tag', '文件夹'));
+    row.appendChild(el('span', 'size', node.dir ? '' : fmt(node.size)));
+
+    if (!node.dir) return row;
+
+    const holder = el('div', 'tree-branch');
+    holder.appendChild(row);
+    const kids = buildKids(node);
+    kids.style.display = node.expanded ? '' : 'none';
+    holder.appendChild(kids);
+    return holder;
+  }
+
+  function fillKids(node) {
+    if (!node.kidsEl) return;
+    node.kidsEl.innerHTML = '';
+    for (const c of node.children) node.kidsEl.appendChild(buildRow(c));
+  }
+
+  async function toggleExpand(node) {
+    if (!node.dir || node.loading) return;
+
+    if (!node.loaded) {
+      node.loading = true;
+      if (node.caretEl) node.caretEl.textContent = '…';
+      try {
+        const r = await window.qh.probe(share.url, share.pwd, node.fid);
+        if (r && r.error) throw new Error(r.error);
+        const items = (r && r.files) || [];
+        node.children = items.map((it) => makeNode(it, node));
+        node.loaded = true;
+        node.expanded = true;
+        fillKids(node);
+        if (node.kidsEl) node.kidsEl.style.display = '';
+        if (node.caretEl) node.caretEl.textContent = '▾';
+        refreshChecks();
+        syncCount();
+        if (r && r.truncated) say('该文件夹条目过多，仅显示前 ' + items.length + ' 项');
+        else say('');
+        return;
+      } catch (e) {
+        // 失败时留在收起状态，下次点击重试
+        if (node.kidsEl) {
+          node.kidsEl.innerHTML = '';
+          node.kidsEl.appendChild(el('div', 'empty', '读取失败：' + ((e && e.message) || e)));
+          node.kidsEl.style.display = '';
+        }
+        if (node.caretEl) node.caretEl.textContent = '▸';
+        say('读取文件夹失败：' + ((e && e.message) || e));
+        return;
+      } finally {
+        node.loading = false;
+      }
+    }
+
+    node.expanded = !node.expanded;
+    if (node.kidsEl) node.kidsEl.style.display = node.expanded ? '' : 'none';
+    if (node.caretEl) node.caretEl.textContent = node.expanded ? '▾' : '▸';
+  }
+
+  /** 勾选：文件夹=整包；重新勾选会清掉其下单独选的子项，避免重复转存 */
+  function toggleSelect(node, checked) {
+    if (checked) {
+      for (let p = node.parent; p; p = p.parent) selected.delete(p.fid);   // 上去重：不再整包
+      if (node.dir) dropDescendants(node);                                  // 下去重：子项已包含
+      // parentFid：该项所在的分享目录，主进程按它 + 本次 stoken 现取 token
+      selected.set(node.fid, {
+        fid: node.fid,
+        parentFid: node.parent ? node.parent.fid : '0',
+        token: node.token,
+        name: node.name,
+        dir: node.dir,
+      });
+    } else {
+      selected.delete(node.fid);
+      if (node.dir) dropDescendants(node);
+    }
+    refreshChecks();
+    syncCount();
+  }
+
+  function dropDescendants(node) {
+    for (const c of node.children) {
+      selected.delete(c.fid);
+      if (c.dir) dropDescendants(c);
+    }
+  }
+
+  function hasSelectedChild(node) {
+    for (const c of node.children) {
+      if (selected.has(c.fid) || hasSelectedChild(c)) return true;
+    }
+    return false;
+  }
+
+  function refreshChecks() {
+    if (!rootNode) return;
+    walkChecks(rootNode, false);
+    syncCount();
+  }
+
+  function walkChecks(node, covered) {
+    for (const c of node.children) {
+      const self = selected.has(c.fid);
+      if (c.cbEl) {
+        c.cbEl.checked = covered || self;
+        c.cbEl.disabled = covered;                                       // 已包含在上级整包里
+        c.cbEl.indeterminate = !covered && !self && hasSelectedChild(c);  // 下面有单独勾选的
+        c.cbEl.title = covered ? '已包含在上级文件夹里；取消上级的勾选就能单独挑' : '';
+      }
+      if (c.rowEl) c.rowEl.classList.toggle('covered', covered);
+      walkChecks(c, covered || self);
+    }
+  }
+
   function syncCount() {
-    const total = share ? share.files.length : 0;
-    $('count').textContent = total ? ('已选 ' + selected.size + ' / ' + total) : '未解析';
-    $('selAll').disabled = !total;
-    $('selAll').checked = total > 0 && selected.size === total;
-    $('selAll').indeterminate = selected.size > 0 && selected.size < total;
-    $('saveBtn').disabled = !share || selected.size === 0;
+    const rootKids = rootNode ? rootNode.children : [];
+    const allRoot = rootKids.length > 0 && rootKids.every((c) => selected.has(c.fid));
+    const anySel = selected.size > 0;
+    $('selAll').disabled = !rootKids.length;
+    $('selAll').checked = allRoot;
+    $('selAll').indeterminate = !allRoot && anySel;
+    $('clearBtn').disabled = !anySel;
+    $('count').textContent = share ? ('共选 ' + selected.size + ' 项') : '未解析';
+    $('saveBtn').disabled = !share || !anySel;
     $('footerMsg').textContent = !share ? '请先解析链接并勾选文件'
-      : (selected.size ? ('将转存 ' + selected.size + ' 项到「' + target.name + '」') : '请勾选要转存的文件');
+      : (anySel ? ('将转存 ' + selected.size + ' 项到「' + target.name + '」') : '请勾选要转存的文件');
   }
 
   async function doProbe() {
@@ -152,20 +342,31 @@
     if (!url) { say('请填写分享链接'); return; }
     say('解析中…');
     $('probeBtn').disabled = true;
+    selected.clear();
+    share = null;
+    rootNode = null;
     try {
-      const r = await window.qh.probe(url, pwd);
+      const r = await window.qh.probe(url, pwd, '0');
       if (r && r.error) throw new Error(r.error);
-      share = { url, pwd, files: (r && r.files) || [] };
-      selected = new Set(share.files.map((f) => f.fid)); // 默认全选，用户可取消
-      renderFiles();
-      say('解析成功：' + share.files.length + ' 项', true);
+      share = { url, pwd, title: (r && r.title) || '' };
+      rootNode = {
+        fid: '0', token: '', name: share.title || '分享内容', dir: true, size: 0,
+        parent: null, depth: 0, loaded: true, loading: false, expanded: true,
+        children: [], kidsEl: null, cbEl: null, caretEl: null, rowEl: null,
+      };
+      rootNode.children = ((r && r.files) || []).map((it) => makeNode(it, rootNode));
+      buildTree();
+      say('解析成功：根层 ' + rootNode.children.length + ' 项，点 ▸ 展开文件夹', true);
     } catch (e) {
-      share = null; selected = new Set(); renderFiles();
+      share = null; rootNode = null;
+      buildTree();
       say('解析失败：' + (e && e.message));
     } finally {
       $('probeBtn').disabled = false;
     }
   }
+
+  /* ---------------- 保存位置 ---------------- */
 
   async function loadFolders(fid) {
     $('folders').innerHTML = '<div class="empty">读取中…</div>';
@@ -194,12 +395,30 @@
     syncCount();
   }
 
+  /* ---------------- 交互 ---------------- */
+
   $('probeBtn').onclick = doProbe;
+
   $('selAll').onchange = () => {
-    if (!share) return;
-    selected = $('selAll').checked ? new Set(share.files.map((f) => f.fid)) : new Set();
-    renderFiles();
+    if (!share || !rootNode) return;
+    if ($('selAll').checked) {
+      for (const c of rootNode.children) {
+        if (c.dir) dropDescendants(c);
+        selected.set(c.fid, { fid: c.fid, parentFid: '0', token: c.token, name: c.name, dir: c.dir });
+      }
+    } else {
+      selected.clear();
+    }
+    refreshChecks();
+    syncCount();
   };
+
+  $('clearBtn').onclick = () => {
+    selected.clear();
+    refreshChecks();
+    syncCount();
+  };
+
   $('upBtn').onclick = () => {
     if (stack.length <= 1) return;
     stack.pop();
@@ -214,8 +433,11 @@
     $('saveBtn').disabled = true;
     say('转存中…');
     try {
+      const items = Array.from(selected.values());
       const r = await window.qh.save({
-        url: share.url, pwd: share.pwd, toPdirFid: target.fid, fids: Array.from(selected),
+        url: share.url, pwd: share.pwd, toPdirFid: target.fid,
+        items,
+        fids: items.map((x) => x.fid),
       });
       if (r && r.ok) say('✓ 已转存 ' + r.count + ' 项到「' + target.name + '」', true);
       else say('✗ ' + ((r && r.message) || '转存失败'));

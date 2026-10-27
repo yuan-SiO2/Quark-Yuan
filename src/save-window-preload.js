@@ -5,7 +5,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('qh', {
-  probe: (url, pwd) => ipcRenderer.invoke('qh:share-probe', { url, pwd }),
+  // dir: 分享内的目录 fid（'0' = 分享根），用于逐层浏览文件夹分享
+  probe: (url, pwd, dir) => ipcRenderer.invoke('qh:share-probe', { url, pwd, dir: dir || '0' }),
   folders: (pdirFid) => ipcRenderer.invoke('qh:list-folders', pdirFid),
   save: (payload) => ipcRenderer.invoke('qh:share-save', payload),
   theme: () => ipcRenderer.invoke('qh:get-theme-sync'),

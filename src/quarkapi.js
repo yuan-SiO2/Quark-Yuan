@@ -100,7 +100,7 @@ async function shareStoken(pwdId, passcode) {
   return st;
 }
 
-async function shareDetail(pwdId, stoken, pdirFid) {
+async function shareDetail(pwdId, stoken, pdirFid, page, size) {
   const q =
     '/share/sharepage/detail?pwd_id=' +
     encodeURIComponent(pwdId) +
@@ -108,52 +108,168 @@ async function shareDetail(pwdId, stoken, pdirFid) {
     encodeURIComponent(stoken) +
     '&pdir_fid=' +
     encodeURIComponent(pdirFid || '0') +
-    '&force=0&_page=1&_size=100&_fetch_banner=0&_fetch_share=0&_fetch_total=1' +
+    '&force=0&_page=' +
+    (page || 1) +
+    '&_size=' +
+    (size || 100) +
+    '&_fetch_banner=0&_fetch_share=0&_fetch_total=1' +
     '&_sort=file_type:asc,updated_at:desc';
   const j = await get(q);
   const d = j.data || {};
-  return { list: d.list || [], total: d.total || 0, title: (d.share || {}).title || '' };
+  return { list: d.list || [], total: Number(d.total) || 0, title: (d.share || {}).title || '' };
 }
 
-/** 只读取：探测链接是否有效、里面有多少文件（不落盘、不转存） */
-async function probeShare(url, passcode) {
-  const p = parseShareUrl(url);
-  if (!p) throw new Error('不是有效的夸克分享链接');
-  const st = await shareStoken(p.pwdId, passcode || p.pwd);
-  const d = await shareDetail(p.pwdId, st, '0');
-  const files = (d.list || []).map((it) => ({
+/** 分享记录 → 窗口用的结构（token 转存时要用，必须跟着条目一起带走） */
+function mapShareItem(it) {
+  return {
     fid: it.fid,
     token: it.share_fid_token || it.fid_token || '',
     name: it.file_name || '',
     size: Number(it.size) || 0,
-    dir: !!it.dir,
-  }));
-  return { pwdId: p.pwdId, pwd: passcode || p.pwd, total: files.length, title: d.title, files };
+    dir: it.dir === true || it.file_type === 0,
+  };
 }
 
-/** 转存到指定目录；onlyFids 为空时转存全部 */
-async function saveShareToDrive(url, passcode, toPdirFid, onlyFids) {
+const SHARE_PAGE_SIZE = 100;
+const SHARE_MAX_PAGES = 20;
+
+/**
+ * 列分享里的一层目录：pdirFid='0' 是分享根，其它值是分享内的子目录。
+ * 这样文件夹分享也能进去挑单个文件，而不是只能整包转存。
+ */
+async function listShareDir(url, passcode, pdirFid) {
   const p = parseShareUrl(url);
   if (!p) throw new Error('不是有效的夸克分享链接');
   const st = await shareStoken(p.pwdId, passcode || p.pwd);
-  const d = await shareDetail(p.pwdId, st, '0');
-  let list = (d.list || []).filter((x) => x && x.fid);
-  if (Array.isArray(onlyFids) && onlyFids.length) {
-    const want = new Set(onlyFids);
-    list = list.filter((x) => want.has(x.fid));
+  const dir = pdirFid || '0';
+  const all = [];
+  let title = '';
+  let total = 0;
+  for (let page = 1; page <= SHARE_MAX_PAGES; page++) {
+    const d = await shareDetail(p.pwdId, st, dir, page, SHARE_PAGE_SIZE);
+    if (page === 1) {
+      title = d.title;
+      total = d.total;
+    }
+    const got = d.list || [];
+    all.push(...got);
+    if (got.length < SHARE_PAGE_SIZE || all.length >= total) break;
   }
-  if (!list.length) throw new Error('没有可转存的文件（可能未勾选）');
-  const fids = list.map((x) => x.fid);
-  const tokens = list.map((x) => x.share_fid_token || x.fid_token || '');
-  const j = await post('/share/sharepage/save', {
-    fid_list: fids,
-    fid_token_list: tokens,
-    to_pdir_fid: toPdirFid || '0',
-    pwd_id: p.pwdId,
-    stoken: st,
-  });
-  const taskId = (j.data || {}).task_id || '';
-  return { ok: true, count: fids.length, taskId, message: j.message || 'ok' };
+  const files = all.filter((x) => x && x.fid).map(mapShareItem);
+  return {
+    pwdId: p.pwdId,
+    pwd: passcode || p.pwd,
+    pdirFid: dir,
+    title,
+    total: Math.max(total, files.length),
+    truncated: total > files.length,
+    files,
+  };
+}
+
+/** 只读取：探测链接是否有效、某一层里有什么（不落盘、不转存） */
+async function probeShare(url, passcode, pdirFid) {
+  return listShareDir(url, passcode, pdirFid);
+}
+
+/** 勾选项按「所在分享目录」分组，顺便去重 */
+function groupByParent(items) {
+  const groups = new Map(); // parentFid -> Set(fid)
+  for (const it of items) {
+    const fid = String((it && it.fid) || '');
+    if (!fid) continue;
+    const parent = String((it && (it.parentFid || it.pdirFid)) || '0') || '0';
+    if (!groups.has(parent)) groups.set(parent, new Set());
+    groups.get(parent).add(fid);
+  }
+  return groups;
+}
+
+/**
+ * 用「本次转存要用的 stoken」现场回查 token。
+ * 夸克的 share_fid_token 与发它时用的 stoken 同源，拿旧的 token 配新 stoken
+ * 会被服务端判成「token 校验异常」，所以这里不信窗口送来的 token，只信 fid + 所在目录。
+ */
+async function resolveShareTokens(pwdId, stoken, items) {
+  const groups = groupByParent(items);
+  const tokens = new Map();
+  const noToken = [];
+  for (const [parent, want] of groups) {
+    let page = 1;
+    let total = 0;
+    const missing = new Set(want);
+    while (page <= SHARE_MAX_PAGES && missing.size) {
+      const d = await shareDetail(pwdId, stoken, parent, page, SHARE_PAGE_SIZE);
+      const list = d.list || [];
+      for (const it of list) {
+        if (!it || !it.fid || !missing.has(it.fid)) continue;
+        const tok = it.share_fid_token || it.fid_token || '';
+        if (!tok) {
+          noToken.push(it.fid);
+        } else {
+          tokens.set(it.fid, tok);
+        }
+        missing.delete(it.fid);
+      }
+      if (page === 1) total = d.total;
+      if (list.length < SHARE_PAGE_SIZE) break;
+      if (total && page * SHARE_PAGE_SIZE >= total) break;
+      page++;
+    }
+    if (missing.size) {
+      throw new Error(
+        '分享里已经找不到勾选的文件（可能被分享者移除或改动了目录）：' + Array.from(missing).join(', ')
+      );
+    }
+  }
+  if (noToken.length) {
+    throw new Error('这些文件分享方没给出转存 token，无法转存：' + noToken.join(', '));
+  }
+  return items.map((it) => ({ fid: String(it.fid), token: tokens.get(String(it.fid)) || '' }));
+}
+
+/**
+ * 转存到指定目录。items 支持两种写法：
+ *   - [{ fid, parentFid }]：转存窗口勾选的结果（parentFid = 它所在的分享目录，'0' 是分享根）
+ *   - ['fid'] 或空：旧行为，视作都在分享根
+ * token 一律按「本次 stoken + 所在目录」现场重取，避免 token 与 stoken 不同源。
+ */
+async function saveShareToDrive(url, passcode, toPdirFid, items) {
+  const p = parseShareUrl(url);
+  if (!p) throw new Error('不是有效的夸克分享链接');
+  const arr = Array.isArray(items) ? items : [];
+  const objs = arr
+    .filter((x) => x && typeof x === 'object' && x.fid)
+    .map((x) => ({ fid: String(x.fid), parentFid: String(x.parentFid || x.pdirFid || '0') || '0' }));
+  const fidsOnly = arr.filter((x) => typeof x === 'string' && x);
+  let wanted = objs.length ? objs : fidsOnly.map((fid) => ({ fid: String(fid), parentFid: '0' }));
+  // 去重：同一 fid 可能被重复勾选
+  const seen = new Set();
+  wanted = wanted.filter((x) => (x.fid && !seen.has(x.fid) ? (seen.add(x.fid), true) : false));
+  if (!wanted.length) throw new Error('没有可转存的文件（可能未勾选）');
+
+  let lastErr = null;
+  // stoken 会在服务端轮换/过期：token 类失败时换一个新 stoken 再走一遍
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const st = await shareStoken(p.pwdId, passcode || p.pwd);
+    try {
+      const chosen = await resolveShareTokens(p.pwdId, st, wanted);
+      const j = await post('/share/sharepage/save', {
+        fid_list: chosen.map((x) => x.fid),
+        fid_token_list: chosen.map((x) => x.token),
+        to_pdir_fid: toPdirFid || '0',
+        pwd_id: p.pwdId,
+        stoken: st,
+        scene: 'link',
+      });
+      const taskId = (j.data || {}).task_id || '';
+      return { ok: true, count: chosen.length, taskId, message: j.message || 'ok' };
+    } catch (e) {
+      lastErr = e;
+      if (!/token/i.test(String((e && e.message) || ''))) break;
+    }
+  }
+  throw lastErr || new Error('转存失败');
 }
 
 /* ------------------------------------------------------------------ *
@@ -203,6 +319,7 @@ async function fileInfo(fid) {
 module.exports = {
   readCookie,
   probeShare,
+  listShareDir,
   saveShareToDrive,
   listFolders,
   recycleList,
